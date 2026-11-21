@@ -1,0 +1,26 @@
+# One place for the portal's Streamlit-level values. Chart and badge values
+# live in app/theme.py; these are the ones Streamlit itself reads.
+#
+# No `base` is forced: the portal follows the viewer's light/dark preference,
+# with its own surfaces for each, so what is rendered and what
+# st.context.theme reports always agree (app/theme.py relies on that).
+[theme]
+font = "sans-serif"
+
+[theme.light]
+primaryColor = "#2a78d6"
+backgroundColor = "#fcfcfb"
+secondaryBackgroundColor = "#f0efec"
+textColor = "#1a1a19"
+
+[theme.dark]
+primaryColor = "#3987e5"
+backgroundColor = "#1a1a19"
+secondaryBackgroundColor = "#262624"
+textColor = "#f0efec"
+
+[server]
+headless = true
+
+[browser]
+gatherUsageStats = false
