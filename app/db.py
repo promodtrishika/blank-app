@@ -334,7 +334,8 @@ def _open_sharepoint(cfg):
     from app.sharepoint.graph import GraphClient, GraphError
     from app.sharepoint.store import SharePointStore
 
-    path = Path(cfg.cache_path) if cfg.cache_path else ROOT / ".rtps_cache" / "sharepoint.db"
+    data_dir = Path(os.environ.get("RTPS_DATA_DIR") or ROOT / ".rtps_cache")
+    path = Path(cfg.cache_path) if cfg.cache_path else data_dir / "sharepoint.db"
     path.parent.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(path, check_same_thread=False)
     conn.row_factory = sqlite3.Row

@@ -80,6 +80,8 @@ def load() -> SharePointConfig | None:
         raise ValueError("SharePoint is enabled but these settings are missing: "
                          + ", ".join(missing))
     values = {k: v for k, v in raw.items() if k in FIELDS and v not in (None, "")}
+    if "cache_path" not in values and os.environ.get("RTPS_SP_CACHE_PATH"):
+        values["cache_path"] = os.environ["RTPS_SP_CACHE_PATH"]
     if "pull_interval_seconds" in values:
         values["pull_interval_seconds"] = int(values["pull_interval_seconds"])
     values["site_path"] = "/" + values["site_path"].strip("/")

@@ -33,6 +33,14 @@ uv run python -m app.sharepoint.provision
 The full guide is [docs/SHAREPOINT.md](docs/SHAREPOINT.md). Without that
 configuration the portal runs on the local SQLite database described below.
 
+## Host it on Microsoft's cloud
+
+To run the portal on Azure App Service, with sign-in through Microsoft 365, a
+Teams app and a link on the SharePoint site, follow
+[docs/AZURE.md](docs/AZURE.md). Pushes to `main` are tested and deployed by
+`.github/workflows/azure.yml`; `startup.sh` is the App Service startup command,
+and `python -m app.teams_package` builds the Teams app.
+
 ## Sign in (local database)
 
 Every demo account uses the password `Rtps@2026`. The one-time passcode is

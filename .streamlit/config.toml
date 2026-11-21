@@ -22,5 +22,9 @@ textColor = "#f0efec"
 [server]
 headless = true
 
+[client]
+# Staff see the portal, not Streamlit's developer menu or its "Deploy" button.
+toolbarMode = "viewer"
+
 [browser]
 gatherUsageStats = false

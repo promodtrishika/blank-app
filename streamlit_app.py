@@ -149,7 +149,35 @@ def sync_status() -> None:
             st.markdown(":green-badge[:material/cloud_done: Saved to SharePoint]")
 
 
+def public_url() -> str:
+    """The portal's own address, for links that leave a frame."""
+    import os
+
+    if os.environ.get("RTPS_PUBLIC_URL"):
+        return os.environ["RTPS_PUBLIC_URL"].rstrip("/")
+    if os.environ.get("WEBSITE_HOSTNAME"):            # set by Azure App Service
+        return f"https://{os.environ['WEBSITE_HOSTNAME']}"
+    return "/"
+
+
+def teams_launcher() -> None:
+    """What the Teams tab shows. Microsoft's sign-in page refuses to open
+    inside a frame, so the portal itself opens in the browser."""
+    st.title(":material/verified_user: RTPS QAP Portal", anchor=False)
+    st.caption("Quality Assurance Portal for Right to Public Services.")
+    with st.container(border=True):
+        st.markdown("The portal opens in your browser, where you sign in with your "
+                    "Microsoft 365 account.")
+        st.link_button("Open the RTPS QAP Portal", public_url(), type="primary",
+                       icon=":material/open_in_new:", width="stretch")
+    st.caption("Microsoft does not allow its sign-in page inside a Teams tab, so "
+               "the portal cannot run inside Teams itself.")
+
+
 def main() -> None:
+    if st.query_params.get("from") == "teams":
+        teams_launcher()
+        return
     try:
         db.connect()
     except Exception as exc:          # SharePoint unreachable on first load
