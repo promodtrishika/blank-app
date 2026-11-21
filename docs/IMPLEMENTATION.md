@@ -10,11 +10,11 @@ end; the departures are all about the production stack and live integrations.
 |---|---|---|---|
 | Frontend | React / Angular | Streamlit (Python) | Screens and flows carry over one-for-one; `app/navigation.py` is the route + permission table |
 | API | .NET Core, 11 APIs | Python modules called in-process | `app/workflow.py`, `app/auth.py`, `app/audit.py`, `app/notify.py` are the service layer to port; each public function is one API operation |
-| Database | SQL Server | SQLite, same table names and columns | `app/db.py` `SCHEMA` is the DDL reference; types map directly (`TEXT`→`NVARCHAR`, `REAL`→`DECIMAL`, `BLOB`→`VARBINARY(MAX)`) |
-| Identity | Azure AD SSO + MFA + JWT | Local accounts, salted SHA-256, OTP field stubbed | Replace `auth.authenticate` with the Azure AD token; keep the role → permission → scope model |
+| Database | SQL Server | SQLite, same table names and columns — or **SharePoint lists** as the system of record (`app/sharepoint/`, [SHAREPOINT.md](SHAREPOINT.md)) | `app/db.py` `SCHEMA` is the DDL reference; types map directly (`TEXT`→`NVARCHAR`, `REAL`→`DECIMAL`, `BLOB`→`VARBINARY(MAX)`) |
+| Identity | Azure AD SSO + MFA + JWT | **Microsoft 365 / Entra ID sign-in** (OpenID Connect) mapped to portal users by email; local passwords only in local mode | Same Entra ID registration; keep the role → permission → scope model |
 | Email / SMS | Live delivery | Recorded in `tblNotifications` with a channel, not sent | Put a sender behind `notify.send` |
 | Power BI | Integration | Not connected | Every report exports CSV/Excel, and the schema is ready for a Power BI dataset |
-| File storage | File storage service | Files stored as BLOBs in `tblDocuments` | Swap the BLOB column for a storage URL |
+| File storage | File storage service | SharePoint mode: the **RTPS Documents** library, a folder per application, SharePoint version history; local mode: BLOBs in `tblDocuments` | Already a storage reference (`sp_item_id`, `sp_version_id`, `web_url`) |
 
 ## Modules
 
@@ -57,6 +57,15 @@ All 18 screens of the inventory exist; screen 01 is the login gate in
   sees its division; District Admin, Reviewer, Verifier and Operator see their
   district. User Management never lets you create or edit a role above your own.
 
+## SharePoint mode
+
+When `[sharepoint]` is configured, each of the 24 tables is a SharePoint list
+and the SQLite file becomes a cache the portal rebuilds from SharePoint.
+Triggers queue every write; the queue is sent through Graph `$batch` at the end
+of each page; delta queries bring back changes made in SharePoint itself. The
+design, its limits (one portal instance per site; direct list edits bypass the
+workflow) and the setup steps are in [SHAREPOINT.md](SHAREPOINT.md).
+
 ## Additions to the blueprint's table list
 
 - `tblRolePermissions` — the join between roles and permissions the RBAC needs.
@@ -65,7 +74,9 @@ All 18 screens of the inventory exist; screen 01 is the login gate in
 
 ## Not done in this prototype
 
-- Live Azure AD, MFA, email, SMS, WhatsApp and Power BI integrations (above).
+- Live email, SMS, WhatsApp and Power BI integrations (above). Microsoft 365
+  sign-in and SharePoint storage are built, and tested against a fake Graph and
+  a fake OpenID provider; they have not yet run against a real tenant.
 - Device tracking beyond the IP address and browser recorded in the audit trail.
 - Encryption at rest and disaster recovery: infrastructure concerns for the
   production SQL Server, not the app.

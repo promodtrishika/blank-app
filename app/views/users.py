@@ -129,7 +129,9 @@ with create:
         with row2[0]:
             mobile = st.text_input("Mobile", max_chars=10)
         with row2[1]:
-            email = st.text_input("Email")
+            email = st.text_input("Email" + ("" if auth.passwords_allowed() else " *"),
+                                  help=None if auth.passwords_allowed() else
+                                  "The Microsoft 365 account this person signs in with.")
         with row2[2]:
             role = st.selectbox("Role *", [r["role_name"] for r in roles])
         division_id, district_id = division_district_inputs("new")
@@ -144,24 +146,32 @@ with create:
             problems.append("That username is taken.")
         if mobile and (len(mobile) != 10 or not mobile.isdigit()):
             problems.append("A mobile number is ten digits.")
+        if not auth.passwords_allowed():
+            if not email or "@" not in email:
+                problems.append("An email address is required: it is the Microsoft "
+                                "365 account the user signs in with.")
+            elif db.scalar("SELECT COUNT(*) FROM tblUsers WHERE lower(email) = ?",
+                           (email.strip().lower(),)):
+                problems.append("Another user already has that email address.")
         chosen = next(r for r in roles if r["role_name"] == role)
         if chosen["scope"] == "district" and not district_id:
-            problems.append(f"A {role} must be mapped to a district.")
+            problems.append(f"{role} accounts must be mapped to a district.")
         if chosen["scope"] == "division" and not division_id:
-            problems.append(f"A {role} must be mapped to a division.")
+            problems.append(f"{role} accounts must be mapped to a division.")
         if problems:
             for p in problems:
                 st.error(p, icon=":material/error:")
         else:
-            temp = secrets.token_urlsafe(9)
-            salt = uuid.uuid4().hex[:16]
+            temp = secrets.token_urlsafe(9) if auth.passwords_allowed() else None
+            salt = uuid.uuid4().hex[:16] if temp else "!"
             uid = db.execute(
                 "INSERT INTO tblUsers(username, password_hash, salt, employee_name,"
                 " designation, mobile, email, division_id, district_id, status,"
                 " created_at, created_by) VALUES (?,?,?,?,?,?,?,?,?, 'Active',"
                 " datetime('now'), ?)",
-                (username.strip(), db.hash_password(temp, salt), salt, name.strip(),
-                 designation or None, mobile or None, email or None, division_id,
+                (username.strip(), db.hash_password(temp, salt) if temp else "!", salt,
+                 name.strip(), designation or None, mobile or None,
+                 email.strip().lower() or None, division_id,
                  district_id, user["username"]))
             db.execute("INSERT INTO tblUserRoles(user_id, role_id) VALUES (?,?)",
                        (uid, chosen["role_id"]))
@@ -169,9 +179,14 @@ with create:
                       new_value=role, user=user)
             st.success(f"{username.strip()} created as {role}.",
                        icon=":material/person_add:")
-            st.info(f"Temporary password: `{temp}` — shown once. Hand it over "
-                    "securely; the user should change it at first sign-in.",
-                    icon=":material/key:")
+            if temp:
+                st.info(f"Temporary password: `{temp}` — shown once. Hand it over "
+                        "securely; the user should change it at first sign-in.",
+                        icon=":material/key:")
+            else:
+                st.info(f"{username.strip()} signs in with Microsoft 365 as "
+                        f"{email.strip().lower()}. There is no portal password.",
+                        icon=":material/account_circle:")
 
 with edit:
     if everyone.empty:
@@ -247,8 +262,11 @@ with edit:
                           new_value=flip, user=user)
                 st.rerun()
         with cols[1]:
-            if st.button("Reset password", icon=":material/lock_reset:",
-                         width="stretch", disabled=above_me):
+            if not auth.passwords_allowed():
+                st.caption("Sign-in is through Microsoft 365: passwords are reset "
+                           "there, not in the portal.")
+            elif st.button("Reset password", icon=":material/lock_reset:",
+                           width="stretch", disabled=above_me):
                 temp = secrets.token_urlsafe(9)
                 db.execute("UPDATE tblUsers SET password_hash = ? WHERE user_id = ?",
                            (db.hash_password(temp, target["salt"]), uid))

@@ -33,8 +33,7 @@ ui.kpi_row([
     ("Documents", f"{totals['n'] or 0:,}"),
     ("Attachment checks passed", f"{totals['verified'] or 0:,}"),
     ("Storage used", f"{(totals['bytes'] or 0) / 1_048_576:,.1f} MB"),
-    ("Formats accepted", "PDF · DOCX · XLSX · JPG · PNG"),
-])
+], per_row=3)
 
 if frame.empty:
     ui.empty_state("No application matches these filters.")
@@ -77,11 +76,27 @@ else:
             f"{docs.loc[docs.document_id == i, 'version'].iloc[0]}"),
         key="doc_pick")
     picked = db.one("SELECT * FROM tblDocuments WHERE document_id = ?", (doc_id,))
+    content = picked["content"]
+    in_sharepoint = picked["sp_item_id"] is not None
+    if content is None and in_sharepoint:
+        # The bytes live in the SharePoint library: fetch once per document
+        # version and keep them for this session.
+        cache_key = f"doc_bytes_{doc_id}_{picked['sp_version_id']}"
+        if cache_key not in st.session_state:
+            with st.spinner("Fetching from SharePoint…"):
+                try:
+                    st.session_state[cache_key] = db.store().files.download_document(
+                        picked["sp_item_id"], picked["sp_version_id"])
+                except Exception as exc:
+                    st.session_state[cache_key] = None
+                    st.error(f"SharePoint did not return the file: {exc}",
+                             icon=":material/cloud_off:")
+        content = st.session_state[cache_key]
     cols = st.columns(3)
     with cols[0]:
-        if picked["content"] is not None:
+        if content is not None:
             st.download_button(
-                "Download", picked["content"], picked["file_name"],
+                "Download", content, picked["file_name"],
                 MIME.get(picked["file_type"].upper(), "application/octet-stream"),
                 icon=":material/download:", width="stretch",
                 on_click=lambda: audit.log("Document downloaded",
@@ -105,9 +120,14 @@ else:
                       new_value="Verified", user=user)
             st.rerun()
     with cols[2]:
-        st.caption(f"Version {picked['version']} of {picked['file_name']}")
-    if picked["content"] is not None and picked["file_type"].upper() in ("JPG", "JPEG", "PNG"):
-        st.image(picked["content"], caption=picked["file_name"], width=360)
+        st.caption(f"Version {picked['version']} of {picked['file_name']}"
+                   + (f" · SharePoint version {picked['sp_version_id']}"
+                      if picked["sp_version_id"] else ""))
+        if picked["web_url"]:
+            st.link_button("Open in SharePoint", picked["web_url"],
+                           icon=":material/open_in_new:", width="stretch")
+    if content is not None and picked["file_type"].upper() in ("JPG", "JPEG", "PNG"):
+        st.image(content, caption=picked["file_name"], width=360)
 
 ui.section("Upload")
 if not auth.has("doc.upload"):
@@ -119,7 +139,9 @@ else:
     with st.form("upload", border=True, clear_on_submit=True):
         files = st.file_uploader("Files", type=ALLOWED, accept_multiple_files=True,
                                  help="A file with the same name becomes the next "
-                                      "version, and the earlier one is kept.")
+                                      "version, and the earlier one is kept"
+                                      + (" — in SharePoint's own version history."
+                                         if db.mode() == "sharepoint" else "."))
         go = st.form_submit_button("Upload", type="primary",
                                    icon=":material/upload:", width="stretch")
     if go and files:

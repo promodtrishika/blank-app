@@ -212,11 +212,15 @@ def empty_state(message: str, icon: str = ":material/inbox:") -> None:
     st.info(message, icon=icon)
 
 
-def download_row(frame: pd.DataFrame, stem: str, title: str | None = None) -> None:
-    """Export in the three formats the blueprint names — PDF, Excel, CSV."""
+def download_row(frame: pd.DataFrame, stem: str, title: str | None = None,
+                 save_to_sharepoint: bool = False) -> None:
+    """Export in the three formats the blueprint names — PDF, Excel, CSV —
+    and, for reports in SharePoint mode, save a copy to the Reports library."""
     if frame.empty:
         return
     title = title or stem.replace("-", " ").title()
+    if save_to_sharepoint and db.mode() == "sharepoint":
+        _save_report_row(frame, stem, title)
     cols = st.columns(3)
     with cols[0]:
         st.download_button("Download PDF", _pdf(frame, title), f"{stem}.pdf",
@@ -231,6 +235,40 @@ def download_row(frame: pd.DataFrame, stem: str, title: str | None = None) -> No
         st.download_button("Download CSV", frame.to_csv(index=False).encode("utf-8"),
                            f"{stem}.csv", "text/csv", icon=":material/download:",
                            width="stretch")
+
+
+def _save_report_row(frame: pd.DataFrame, stem: str, title: str) -> None:
+    from app import audit
+
+    store = db.store()
+    key = f"sp_saved_{stem}"
+    left, right = st.columns([1, 2])
+    with left:
+        if st.button("Save to SharePoint", icon=":material/cloud_upload:",
+                     width="stretch", key=f"save_{stem}",
+                     help=f"Saves the PDF and the Excel file to "
+                          f"{store.config.reports_library} / {title}."):
+            stamp = pd.Timestamp.now().strftime("%Y-%m-%d %H%M%S")
+            try:
+                with st.spinner("Saving to SharePoint…"):
+                    links = {
+                        "PDF": store.files.save_report(title, f"{stem} {stamp}.pdf",
+                                                       _pdf(frame, title)),
+                        "Excel": store.files.save_report(title, f"{stem} {stamp}.xlsx",
+                                                         _xlsx(frame, title)),
+                    }
+                st.session_state[key] = links
+                audit.log("Report saved to SharePoint", "Reporting", "Reports library",
+                          f"{title} {stamp}", new_value=f"{len(frame)} rows")
+            except Exception as exc:
+                st.session_state.pop(key, None)
+                st.error(f"SharePoint did not accept the report: {exc}",
+                         icon=":material/cloud_off:")
+    with right:
+        links = st.session_state.get(key)
+        if links:
+            st.markdown("Saved to SharePoint: " + " · ".join(
+                f"[{kind}]({url})" for kind, url in links.items() if url))
 
 
 def _xlsx(frame: pd.DataFrame, title: str) -> bytes:

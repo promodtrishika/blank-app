@@ -9,14 +9,17 @@ from __future__ import annotations
 
 import hashlib
 import os
-import random
 import sqlite3
-from datetime import date, datetime, timedelta
+import threading
 from pathlib import Path
 
 import streamlit as st
 
-DB_PATH = Path(os.environ.get("RTPS_QAP_DB", Path(__file__).resolve().parent.parent / "rtps_qap.db"))
+ROOT = Path(__file__).resolve().parent.parent
+DB_PATH = Path(os.environ.get("RTPS_QAP_DB", ROOT / "rtps_qap.db"))
+
+# One connection serves every session; this keeps them from interleaving.
+LOCK = threading.RLock()
 
 SCHEMA = """
 PRAGMA foreign_keys = ON;
@@ -225,7 +228,10 @@ CREATE TABLE IF NOT EXISTS tblDocuments (
     uploaded_by    INTEGER REFERENCES tblUsers(user_id),
     upload_time    TEXT NOT NULL,
     verified       INTEGER NOT NULL DEFAULT 0,
-    content        BLOB
+    content        BLOB,                  -- local mode; empty once in SharePoint
+    sp_item_id     TEXT,                  -- SharePoint driveItem id
+    sp_version_id  TEXT,                  -- the SharePoint version this row is
+    web_url        TEXT
 );
 
 CREATE TABLE IF NOT EXISTS tblNotifications (
@@ -286,8 +292,7 @@ DEFAULT_SETTINGS = [
 
 
 def setting(key: str, default: str | None = None) -> str | None:
-    row = connect().execute("SELECT setting_value FROM tblSettings"
-                            " WHERE setting_key = ?", (key,)).fetchone()
+    row = one("SELECT setting_value FROM tblSettings WHERE setting_key = ?", (key,))
     return row[0] if row else default
 
 
@@ -295,28 +300,117 @@ def hash_password(password: str, salt: str) -> str:
     return hashlib.sha256((salt + password).encode("utf-8")).hexdigest()
 
 
-@st.cache_resource(show_spinner=False)
-def connect() -> sqlite3.Connection:
-    """One connection for the whole app, shared across sessions."""
-    first_run = not DB_PATH.exists()
-    conn = sqlite3.connect(DB_PATH, check_same_thread=False)
+def _add_missing_columns(conn: sqlite3.Connection) -> None:
+    """Bring a database made by an earlier version up to the current schema."""
+    have = {r[1] for r in conn.execute("PRAGMA table_info(tblDocuments)")}
+    for col in ("sp_item_id", "sp_version_id", "web_url"):
+        if col not in have:
+            conn.execute(f"ALTER TABLE tblDocuments ADD COLUMN {col} TEXT")
+
+
+@st.cache_resource(show_spinner="Connecting to the portal's data…")
+def _runtime():
+    """The shared connection, and the SharePoint store when SharePoint is on."""
+    from app.sharepoint import config as sp_config
+
+    cfg = sp_config.load()
+    if cfg is None:
+        first_run = not DB_PATH.exists()
+        conn = sqlite3.connect(DB_PATH, check_same_thread=False)
+        conn.row_factory = sqlite3.Row
+        conn.executescript(SCHEMA)
+        _add_missing_columns(conn)
+        if first_run or not conn.execute("SELECT 1 FROM tblRoles LIMIT 1").fetchone():
+            seed(conn)
+        conn.executemany(
+            "INSERT OR IGNORE INTO tblSettings(setting_key, setting_value, label)"
+            " VALUES (?,?,?)", DEFAULT_SETTINGS)
+        conn.commit()
+        return conn, None
+    return _open_sharepoint(cfg)
+
+
+def _open_sharepoint(cfg):
+    from app.sharepoint.graph import GraphClient, GraphError
+    from app.sharepoint.store import SharePointStore
+
+    path = Path(cfg.cache_path) if cfg.cache_path else ROOT / ".rtps_cache" / "sharepoint.db"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    conn = sqlite3.connect(path, check_same_thread=False)
     conn.row_factory = sqlite3.Row
     conn.executescript(SCHEMA)
-    if first_run or not conn.execute("SELECT 1 FROM tblRoles LIMIT 1").fetchone():
-        seed(conn)
+    _add_missing_columns(conn)
+    store = SharePointStore(conn, GraphClient(cfg), cfg, SCHEMA, LOCK)
+    store.install()
+    had_data = bool(conn.execute("SELECT hydrated FROM _sync_state").fetchone()[0])
+    try:
+        if store.needs_hydrate():
+            store.reset_cache()
+            store.hydrate()
+        else:
+            store.push()
+            store.pull()
+    except GraphError as exc:
+        if not had_data:
+            raise RuntimeError(
+                f"Could not load the portal's data from SharePoint ({exc}). Check the "
+                "[sharepoint] settings and that the lists are provisioned.") from exc
+        store._error(f"Working from the local copy until SharePoint answers: {exc}")
     conn.executemany(
         "INSERT OR IGNORE INTO tblSettings(setting_key, setting_value, label)"
         " VALUES (?,?,?)", DEFAULT_SETTINGS)
     conn.commit()
-    return conn
+    try:
+        store.push()
+    except GraphError:
+        pass
+    return conn, store
+
+
+def connect() -> sqlite3.Connection:
+    """One connection for the whole app, shared across sessions."""
+    return _runtime()[0]
+
+
+def store():
+    """The SharePoint store, or None in local mode."""
+    return _runtime()[1]
+
+
+def mode() -> str:
+    return "sharepoint" if store() is not None else "local"
+
+
+def flush() -> None:
+    """Send queued changes to SharePoint. Called at the end of every page run."""
+    s = store()
+    if s is None:
+        return
+    try:
+        s.push()
+    except Exception as exc:  # recorded; the changes stay queued
+        s._error(str(exc))
+
+
+def refresh() -> None:
+    """Pick up changes made in SharePoint, at most every pull interval."""
+    s = store()
+    if s is None:
+        return
+    try:
+        s.pull_if_stale()
+    except Exception as exc:
+        s._error(str(exc))
 
 
 def query(sql: str, params: tuple | list = ()) -> list[sqlite3.Row]:
-    return connect().execute(sql, params).fetchall()
+    with LOCK:
+        return connect().execute(sql, params).fetchall()
 
 
 def one(sql: str, params: tuple | list = ()):
-    return connect().execute(sql, params).fetchone()
+    with LOCK:
+        return connect().execute(sql, params).fetchone()
 
 
 def scalar(sql: str, params: tuple | list = (), default=0):
@@ -327,19 +421,23 @@ def scalar(sql: str, params: tuple | list = (), default=0):
 
 
 def execute(sql: str, params: tuple | list = ()) -> int:
-    conn = connect()
-    cur = conn.execute(sql, params)
-    conn.commit()
-    return cur.lastrowid
+    with LOCK:
+        conn = connect()
+        cur = conn.execute(sql, params)
+        conn.commit()
+        return cur.lastrowid
 
 
 def frame(sql: str, params: tuple | list = ()):
+    """A query as a DataFrame — with its columns even when there are no rows,
+    so code that sorts or picks columns works on an empty result too."""
     import pandas as pd
 
-    rows = query(sql, params)
-    if not rows:
-        return pd.DataFrame()
-    return pd.DataFrame([dict(r) for r in rows])
+    with LOCK:
+        cur = connect().execute(sql, params)
+        columns = [c[0] for c in cur.description or []]
+        rows = cur.fetchall()
+    return pd.DataFrame([tuple(r) for r in rows], columns=columns)
 
 
 def seed(conn: sqlite3.Connection) -> None:

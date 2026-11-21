@@ -168,4 +168,5 @@ if frame.empty:
     ui.empty_state("No rows for these filters.", ":material/search_off:")
 else:
     ui.table(frame, columns={}, height=440)
-    ui.download_row(frame, report.lower().replace(" ", "-"), report)
+    ui.download_row(frame, report.lower().replace(" ", "-"), report,
+                    save_to_sharepoint=True)
